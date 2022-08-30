@@ -1,0 +1,809 @@
+---
+title: "Analysis on Movie Revenue"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Preprocessing
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+
+setwd("/Users/mingzhao/Desktop")
+
+movies <- read.csv("movies.csv")
+
+dim(movies)
+
+sapply(movies, class)
+
+sum(is.na(movies))
+
+sapply(movies, function(x) sum(is.na(x)))
+
+##################################################################
+
+# Y
+hist(movies$gross)
+
+#0.USA
+length(unique(movies$country))
+movies$USA <- ifelse(movies$country=="United States", 1, 0)
+table(movies$USA)
+
+#1.year
+table(movies$year)
+is.na(movies$year) <- which(movies$year==2020)
+#movies$period[movies$year>1989 & movies$year<2000] <- "1990-1999"
+#movies$period[movies$year>1999 & movies$year<2010] <- "2000-2009"
+#movies$period[movies$year>2009 & movies$year<2020] <- "2010-2019"
+table(movies$year)
+
+#2.budget
+hist(movies$budget)
+  
+#3.genre
+table(movies$genre)
+movies$genre[movies$genre=="Family"   |
+             movies$genre=="Fantasy"  |
+             movies$genre=="History"  |
+             movies$genre=="Music"    |
+             movies$genre=="Musical"  |
+             movies$genre=="Mystery"  |
+             movies$genre=="Romance"  |
+             movies$genre=="Sci-Fi"   |
+             movies$genre=="Sport"    |
+             movies$genre=="Thriller" | 
+             movies$genre=="Western"] <- "Others"
+movies$genre <- as.factor(movies$genre)
+table(movies$genre)
+
+
+#4.rating
+table(movies$rating)
+movies$rating[movies$rating==""          |
+              movies$rating=="Approved"  |
+              movies$rating=="Not Rated" |
+              movies$rating=="Unrated"] <- "G"
+movies$rating[movies$rating=="X"         |
+              movies$rating=="TV-MA"     |
+              movies$rating=="NC-17"     |
+              movies$rating=="R"] <- "R/NC-17"
+movies$rating[movies$rating=="TV-PG"] <- "PG"
+movies$rating[movies$rating=="TV-14"] <- "PG-13"
+movies$rating <- as.factor(movies$rating)
+table(movies$rating)
+
+#5.runtime
+summary(movies$runtime)
+
+#6.season/month
+movies$released <- as.character(movies$released)
+movies$released <- gsub("\\(..*", " ", movies$released) 
+movies$released <- as.Date(movies$released, "%B %d, %Y")
+movies$month=as.integer(lubridate::month(movies$released))
+movies$season=ifelse(movies$month %in% c(12,1,2),"Winter",
+              ifelse(movies$month %in% c(3,4,5),"Spring",
+              ifelse(movies$month %in% c(6,7,8),"Summer", "Fall")))
+movies$season <- as.factor(movies$season)
+table(movies$season)
+         
+#7.director tier 
+summary(movies$score)
+movies$mscore <- ave(movies$score, movies$director, FUN = mean)
+movies$smscore <- scales::rescale(movies$mscore, to=c(0,1))
+summary(movies$smscore)
+
+movies$tier[movies$smscore>=0.8] <- "A"
+movies$tier[movies$smscore>=0.6 & movies$smscore<0.8] <- "B"
+movies$tier[movies$smscore<0.6] <- "C"
+movies$tier <- as.factor(movies$tier)
+table(movies$tier)
+
+##################################################################
+
+# single imputation
+
+mi_data <- movies[movies$USA==1, ]
+mi_data <- mi_data[!is.na(mi_data$year),]
+
+mi_data <- subset(mi_data,select=-c(released, director, writer, star, company,
+                              gross, month, season, tier, country, USA, mscore, smscore)) 
+
+sapply(mi_data, function(x) sum(is.na(x)))
+dim(mi_data)
+
+sum(is.na(mi_data))
+
+sapply(mi_data, class)
+
+mi_data$budget[mi_data$budget>50000000 & mi_data$budget<=356000000] <- 0
+sapply(mi_data, function(x) sum(is.na(x)))
+
+mi_data_screen <- mi_data[(mi_data$budget!=0 | is.na(mi_data$budget)), ]
+
+mi_data_screen <-mi_data_screen[complete.cases(mi_data_screen$runtime),]
+
+sapply(mi_data_screen, function(x) sum(is.na(x)))
+
+mi <- lm(budget~rating+genre+year+score+votes+runtime, data=mi_data_screen)
+library(MASS)
+par(mfrow=c(1,1))
+boxcox(mi)
+par(mfrow=c(2,2))
+plot(mi)
+
+mi_data_screen$sqrt_budget <- sqrt(mi_data_screen$budget)
+mi_data_screen$log_votes <- log(mi_data_screen$votes)
+mi_data_screen$log_runtime <- log(mi_data_screen$runtime)
+
+mi2 <- lm(sqrt_budget~rating+genre+year+score+log_votes+log_runtime, data=mi_data_screen)
+par(mfrow=c(1,1))
+boxcox(mi2)
+par(mfrow=c(2,2))
+plot(mi2)
+
+library(mice)
+mice_data <- subset(mi_data_screen, select=c(name,sqrt_budget,rating,genre,year,score,log_votes,log_runtime))
+sapply(mice_data, function(x) sum(is.na(x)))
+
+imputed_data <- mice(mice_data[-1], m = 5, seed=2021)
+
+#imputed_data$imp$sqrt_budget
+#imp_tot <- complete(imputed_data, "broad", inc = TRUE)
+#imp_tot <- subset(imp_tot, select=c(sqrt_budget.0, sqrt_budget.1, sqrt_budget.2, sqrt_budget.3, sqrt_budget.4, sqrt_budget.5))
+#imp_tot$sqrt_budget <-  apply(imp_tot[-1], 1, mean) 
+imp_tot <- complete(imputed_data, 2)
+mi_data_screen$imp_budget <- imp_tot$sqrt_budget^2
+
+imp_movies <- subset(mi_data_screen, select = c(name,imp_budget,year))
+
+
+samples <- movies[movies$USA==1, ]
+samples <- samples[!is.na(samples$year),]
+
+data <- merge(samples, imp_movies, by = c("name","year"), all.x = TRUE)
+
+data$budget[is.na(data$budget)] <- data$imp_budget[is.na(data$budget)]
+
+data <- subset(data,select=c(gross,budget,runtime,year,rating,genre,tier,season)) 
+
+dt.split <- data[complete.cases(data),]
+
+dim(dt.split)
+
+##################################################################
+
+# data splitting
+
+set.seed(2021)
+
+n <- nrow(dt.split)
+ids = sample(1:n, size=n/2, replace=FALSE)
+
+train = dt.split[ids,]
+valid = dt.split[-ids,]
+
+dim(data)
+dim(valid)
+
+```
+
+## Exploratory Data Analysis
+  
+```{r}
+
+par(mfrow = c(2, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+hist(train$gross, main=NULL, xlab="gross")
+hist(train$budget, main=NULL, xlab="budget")
+mtext("Figure 1: Histograms of Quantitative Variables", side = 3, font=2, line=-1, outer=TRUE)
+hist(train$runtime, main=NULL, xlab="runtime")
+hist(train$year, main=NULL, xlab="year")
+
+
+panel.cor <- function(x, y) {
+    # usr <- par('usr') on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- round(cor(x, y, use = "complete.obs"), 2)
+    txt <- paste0("R = ", r)
+    cex.cor <- 0.8/strwidth(txt)
+    text(0.5, 0.5, txt, cex = cex.cor * r)
+}
+pairs(~ + gross + budget + runtime + year, data = train, lower.panel = panel.cor, main="Figure 2: Scatter Plot Matrix of Quantitative Variables")
+
+
+par(mfrow = c(1, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+pct <- round(100*prop.table(table(train$rating)))
+lab <- paste(pct)
+lab <- paste(lab,'%',sep='')
+pie(table(train$rating), labels=lab, col=rainbow(9))
+title("Rating", line=-0.9, cex.main=0.9)
+legend(-0.7, -1.1, c('G','PG'), cex = 0.7, fill = rainbow(9)[1:2], horiz = TRUE, inset = c(0, -0.1), xpd = TRUE, bty = "n")
+legend(-0.7, -1.3, c('PG-13','NC-17/R'), cex = 0.7, fill = rainbow(9)[3:4], horiz = TRUE, inset = c(0, -0.1), xpd = TRUE, bty = "n")
+
+pct <- round(100*prop.table(table(train$genre)))
+lab <- paste(pct)
+lab <- paste(lab,'%',sep='')
+pie(table(train$genre), labels=lab, col=rainbow(9))
+title("Genre", line=-0.9, cex.main=0.9)
+legend(-1.3, -1,   c('Action','Adventure','Animation'), cex = 0.7,
+       fill = rainbow(9)[1:3], horiz = TRUE, inset = c(0, -0.1), xpd = TRUE, bty = "n")
+legend(-1.3, -1.2, c('Biography','Comedy   ','Crime'), cex = 0.7,
+       fill = rainbow(9)[4:6], horiz = TRUE, inset = c(0, -0.1), xpd = TRUE, bty = "n")
+legend(-1.3, -1.4, c('Drama','Horror','Others'), cex = 0.7,
+       fill = rainbow(9)[7:9], horiz = TRUE, inset = c(0, -0.1), xpd = TRUE, bty = "n")
+mtext("Figure 3a: Pie Charts of Qualitative Variables", side = 3, font=2, line=-1, outer=TRUE)
+
+
+par(mfrow = c(1, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+pct <- round(100*prop.table(table(train$tier)))
+lab <- paste(pct)
+lab <- paste(lab,'%',sep='')
+pie(table(train$tier), labels=lab, col=rainbow(9))
+title("Director Tier", line=-1, cex.main=0.9)
+legend(-0.6, -1.2, c('A','B','C'), cex = 0.7, fill = rainbow(9), horiz = TRUE, inset = c(0, -0.1), xpd = TRUE, bty = "n")
+
+pct <- round(100*prop.table(table(train$season)))
+lab <- paste(pct)
+lab <- paste(lab,'%',sep='')
+pie(table(train$season), labels=lab, col=rainbow(9))
+title("Season", line=-1, cex.main=0.9)
+legend(-1.6, -1.2, c('Fall','Spring','Summer','Winter'), cex = 0.7, fill = rainbow(9), horiz = TRUE, inset = c(0, -0.1), xpd = TRUE, bty = "n")
+mtext("Figure 3b: Pie Charts of Qualitative Variables", side = 3, font=2, line=-1, outer=TRUE)
+
+
+par(mfrow = c(1, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+boxplot(train$gross~train$rating, xlab=NULL, ylab='gross',col=rainbow(9), las = 2, cex.axis=0.8)
+title("Rating", line=0.2, cex.main=0.9)
+boxplot(train$gross~train$genre, xlab=NULL, ylab='gross',col=rainbow(9), las = 2, cex.axis=0.8)
+title("Genre", line=0.2, cex.main=0.9, xpd = FALSE)
+mtext("Figure 4a: Side-by-Side Box Plots", side = 3, font=2, line=-1, outer=TRUE)
+
+boxplot(train$gross~train$tier, xlab=NULL,ylab='gross',col=rainbow(9), las = 0, cex.axis=0.8)
+title("Director Tier", line=0.2, cex.main=0.9)
+boxplot(train$gross~train$season, xlab=NULL,ylab='gross',col=rainbow(9), las = 2, cex.axis=0.8)
+title("Season", line=0.2, cex.main=0.9)
+mtext("Figure 4b: Side-by-Side Box Plots", side = 3, font=2, line=-1, outer=TRUE)
+
+```
+
+## Preliminary Fit
+  
+```{r}
+
+# model 1
+model1 <- lm(gross~.,data=train)
+summary(model1) #R-squared: 0.5833
+par(mfrow=c(2,2))
+plot(model1, sub.caption = "")
+
+library(MASS)
+par(mfrow=c(1,1))
+boxcox(model1) #Lambda is around 0, so we need to take log transformation on Y.
+
+
+# model 2
+train$log_gross <- log(train$gross)
+train$log_budget <- log(train$budget)
+train$log_runtime <- log(train$runtime)
+
+hist(train$log_gross)
+
+model2 <- lm(log_gross~log_budget+log_runtime+year+rating+genre+tier+season,data=train)
+summary(model2) #R-squared: 0.4683
+par(mfrow=c(2,2))
+plot(model2, sub.caption = "")
+
+par(mfrow=c(1,1))
+boxcox(model2) 
+
+# model 3
+train$log_gross_2 <- train$log_gross^2
+
+hist(train$log_gross_2)
+
+model3 <- lm(log_gross_2~log_budget+log_runtime+year+rating+genre+tier+season,data=train)
+summary(model3) #R-squared: 0.499
+par(mfrow=c(2,2))
+plot(model3, sub.caption = "")
+
+par(mfrow=c(1,1))
+boxcox(model3)
+
+#model 4
+train$log_gross_4 <- train$log_gross^4
+
+hist(train$log_gross_4)
+
+model4 <- lm(log_gross_4~log_budget+log_runtime+year+rating+genre+tier+season,data=train)
+summary(model4) #R-squared: 0.499
+par(mfrow=c(2,2))
+plot(model4, sub.caption = "")
+
+par(mfrow=c(1,1))
+boxcox(model4)
+
+
+#summary
+par(mfrow = c(2, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+hist(train$gross, main=NULL, xlab = "gross")
+boxcox(model1)
+plot(model1,1, sub.caption = expression(paste("Figure 5a: Preliminary Regression of ", gross)))
+plot(model1,2, sub.caption = "")
+
+par(mfrow = c(2, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+hist(train$log_gross, main=NULL, xlab = "log(gross)")
+boxcox(model2)
+plot(model2,1, sub.caption = expression(paste("Figure 5b: Preliminary Regression of ", log(gross))))
+plot(model2,2, sub.caption = "")
+
+par(mfrow = c(2, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+hist(train$log_gross_2, main=NULL, xlab = "log(gross)^2")
+boxcox(model3)
+plot(model3,1, sub.caption = expression(paste("Figure 5c: Preliminary Regression of ", log(gross)^2)))
+plot(model3,2, sub.caption = "")
+
+par(mfrow = c(2, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+hist(train$log_gross_4, main=NULL, xlab = "log(gross)^4")
+boxcox(model4)
+plot(model4,1, sub.caption = expression(paste("Figure 5d: Preliminary Regression of ", log(gross)^4)))
+plot(model4,2, sub.caption = "")
+
+
+#pairs(~ + log_gross + log_budget + log_runtime + year, data = train, lower.panel = panel.cor, main=expression(paste("Figure 6a: Scatter Plot Matrix of ", log(gross)," and Transformed X Variables")))
+
+#pairs(~ + log_gross_2 + log_budget + log_runtime + year, data = train, lower.panel = panel.cor, main=expression(paste("Figure 6b: Scatter Plot Matrix of ", log(gross)^2," and Transformed X Variables")))
+
+pairs(~ + log_gross_4 + log_budget + log_runtime + year, data = train, lower.panel = panel.cor, main=expression(paste("Figure 6: Scatter Plot Matrix of ", log(gross)^4," and Transformed X Variables")))
+
+
+#interaction discussion
+par(mfrow = c(2, 3),oma=c(2,2,2,2),mar=c(4,3,3,3))
+plot(train$log_budget,model4$residuals, xlab="log(budget)")
+abline(h=0, col='red')
+plot(train$log_runtime,model4$residuals, xlab="log(runtim)")
+abline(h=0, col='red')
+plot(train$year,model4$residuals, xlab="year")
+abline(h=0, col='red')
+plot(train$log_budget*train$log_runtime,model4$residuals, xlab="log(budget)*log(runtime)")
+abline(h=0, col='red')
+plot(train$log_budget*train$year,model4$residuals, xlab="log(budget)*year")
+abline(h=0, col='red')
+plot(train$log_runtime*train$year,model4$residuals, xlab="log(runtime)*year")
+abline(h=0, col='red')
+mtext(expression(paste("Figure 7: Model on ", log(gross)^4,": Residuals vs. Interaction Terms")), side = 3, font=2, line=-1, outer=TRUE)
+
+
+```
+
+## Model Selection
+
+Model 1:
+
+
+\begin{aligned}
+
+log(gross)^4_i=\beta_0+\beta_1log(budget)_i+\beta_2log(runtime)_i+\beta_3year_i+\beta_4rating_i+\beta_5genre_i+\beta_6tier_i+\beta_7season_i+ \varepsilon_i
+
+\end{aligned}
+
+
+Model 2:
+
+
+\begin{aligned}
+
+log(gross)^4_i=\beta_0 
+
+&+ \beta_1log(budget)_i+\beta_2log(runtime)_i+\beta_3year_i+\beta_4rating_i+\beta_5genre_i+\beta_6tier_i+\beta_7season_i \\
+&+\beta_8log(budget)_i*log(runtime)_i+\beta_9log(budget) _i*year_i+\beta_{10}log(budget)_i*rating_i+\beta_{11}log(budget)_i*genre_i+\beta_{12}log(budget)_i*tier_i \\
+&+\beta_{13}log(runtime)_i*year_i+\beta_{14}log(runtime)_i*genre_i+\beta_{15}log(runtime)_i*season_i \\
+&+\beta_{16}year_i*rating_i+\beta_{17}year_i*genre_i+\beta_{18}year_i*season_i \\
+&+\beta_{19}rating_i*tier_i + \varepsilon_i \\
+
+\end{aligned}
+
+
+Model 3:
+
+
+\begin{aligned}
+
+log(gross)^4_i=\beta_0 
+
+&+ \beta_1log(budget)_i+\beta_2log(runtime)_i+\beta_3year_i+\beta_4rating_i+\beta_5genre_i+\beta_6tier_i+\beta_7season_i \\
+&+\beta_8log(budget)_i*log(runtime)_i+\beta_9log(budget) _i*year_i+\beta_{10}log(runtime)_i*year_i+ \varepsilon_i \\
+
+\end{aligned}
+
+
+```{r}
+
+train <- subset(train,select=c(log_gross_4, log_budget, log_runtime, year, rating, genre, tier, season)) 
+
+model_0 = lm(log_gross_4~1, data=train) #only intercept
+model_F = lm(log_gross_4~., data=train) #first-order models
+model_F2 = lm(log_gross_4~.^2, data=train) #interaction models
+
+#forwrd stepwise procedure
+length(model_F$coefficients)
+length(model_F2$coefficients)
+
+library(MASS)
+
+sel1 = stepAIC(model_0, scope=list(lower=model_0, upper=model_F), direction="both", k=2, trace=0) #AIC
+sel2 = stepAIC(model_0, scope=list(lower=model_0, upper=model_F), direction="both", k=log(n), trace=0) #BIC
+
+sel3 = stepAIC(model_0, scope=list(lower=model_0, upper=model_F2), direction="both", k=2, trace=0) #AIC
+sel4 = stepAIC(model_0, scope=list(lower=model_0, upper=model_F2), direction="both", k=log(n), trace=0) #BIC
+
+sel1$call; sel2$call; sel3$call; sel4$call
+# sel1 and sel2 are identical
+
+sel1$anova; sel3$anova; sel4$anova
+
+step.f = sel1
+step.f2 = sel3
+step.f3 = sel4
+
+# Therefore, there is 3 candidate models.
+
+```
+
+```{r}
+
+#best subset selection procesure
+
+#library(leaps)
+
+#sub_set <- regsubsets(log_gross_4~.^2,data=train,nbest=1,nvmax=15,method="exhaustive", really.big=T)
+
+#sum_sub <- summary(sub_set)
+
+#n <- nrow(train)
+#p.m <- as.integer(as.numeric(rownames(sum_sub$which))+1)
+
+#sse=sum_sub$rss
+#aic=n*log(sse/n)+2*p.m
+#bic=n*log(sse/n)+log(n)*p.m
+
+#res_sub <- cbind((sum_sub$which+0), sse, sum_sub$rsq, sum_sub$adjr2, sum_sub$cp, bic, aic)
+
+#sse0 <- sum(model_0$residuals^2)
+#p0 <- 1
+#c0 <- sse0/(summary(model_F2)$sigma^2)-(n-2*p0)
+#aic0=n*log(sse0/n)+2*p0
+#bic0=n*log(sse0/n)+log(n)*p0
+
+#none=c(1, rep(0,20), sse0, 0, 0, c0, bic0, aic0)
+
+#res_sub <- rbind(none, res_sub)
+#colnames(res_sub) <- c(colnames(sum_sub$which), "sse", "R^2", "R^2_a", "Cp", "bic", "aic")
+#round(res_sub,5)
+
+```
+
+## Model Validation
+
+#### Internal Validation
+
+```{r}
+
+fit3 <- lm(log_gross_4~.^2, data=train)
+
+mse3<-anova(fit3)["Residuals",3]
+mse3 #593462127
+
+# Candidate Model 1
+sse.fs1<-anova(step.f)["Residuals",2] 
+sse.fs1 #1.769147e+12
+mse.fs1<-anova(step.f)["Residuals",3]
+mse.fs1 #667098982
+p.fs1<-length(step.f$coefficients)  
+p.fs1 #20
+
+##C_p
+cp.fs1<-sse.fs1/mse3-(n-2*p.fs1) 
+cp.fs1 #348.0605
+##Press_p
+press.fs1<-sum(step.f$residuals^2/(1-influence(step.f)$hat)^2) 
+press.fs1 #1.797707e+12
+
+
+## Candidate Model 2
+sse.fs2<-anova(step.f2)["Residuals",2] 
+sse.fs2 #1.555928e+12
+mse.fs2<-anova(step.f2)["Residuals",3]
+mse.fs2 #597285255
+p.fs2<-length(step.f2$coefficients) 
+p.fs2 #67
+
+##C_p
+cp.fs2<-sse.fs2/mse3-(n-2*p.fs2)
+cp.fs2 #82.78
+##Press_p
+press.fs2<-sum(step.f2$residuals^2/(1-influence(step.f2)$hat)^2) 
+press.fs2 #1.653771e+12
+
+
+# Candidate Model 3
+sse.fs3<-anova(step.f3)["Residuals",2] 
+sse.fs3 #1.648972e+12
+mse.fs3<-anova(step.f3)["Residuals",3]
+mse.fs3 #622488616
+p.fs3<-length(step.f3$coefficients) 
+p.fs3 #23
+
+##C_p
+cp.fs3<-sse.fs3/mse3-(n-2*p.fs3)
+cp.fs3 #151.5637
+##Press_p
+press.fs3<-sum(step.f3$residuals^2/(1-influence(step.f3)$hat)^2) 
+press.fs3 #1.680874e+12
+
+```
+
+#### External Validation
+
+```{r}
+
+valid$log_gross_4 <- log(valid$gross)^4
+valid$log_budget <- log(valid$budget)
+valid$log_runtime <- log(valid$runtime)
+
+valid <- subset(valid,select=c(log_gross_4, log_budget, log_runtime, year, rating, genre, tier, season)) 
+
+n <- nrow(valid)
+
+# Candidate Model 1
+fit.fs1.v<-lm(step.f, data=valid) 
+summary(step.f) 
+summary(fit.fs1.v)
+
+##percent change in parameter estimation
+round(abs(coef(step.f)-coef(fit.fs1.v))/abs(coef(step.f))*100,3)
+
+##percent change in standard errors
+sd.fs1<- summary(step.f)$coefficients[,"Std. Error"] 
+sd.fs1.v<- summary(fit.fs1.v)$coefficients[,"Std. Error"] 
+round(abs(sd.fs1-sd.fs1.v)/sd.fs1*100,3)
+
+##mean squared prediction error
+pred.fs1<-predict.lm(step.f,valid[,-1])  #valid[,-1]=dataset without log_gross_4
+mspe.fs1<-mean((pred.fs1-valid[,1])^2) #valid[,1]=log_gross_4
+mspe.fs1 #648278691
+
+press.fs1/n #672542932
+mse.fs1 #667098982
+
+
+# Candidate Model 2
+fit.fs2.v<-lm(step.f2,data=valid) 
+summary(step.f2) 
+summary(fit.fs2.v) 
+
+##percent change in parameter estimation
+round(abs(coef(step.f2)-coef(fit.fs2.v))/abs(coef(step.f2))*100,3)
+
+##percent change in standard errors
+sd.fs2<- summary(step.f2)$coefficients[,"Std. Error"] 
+sd.fs2.v<- summary(fit.fs2.v)$coefficients[,"Std. Error"] 
+round(abs(sd.fs2-sd.fs2.v)/sd.fs2*100,3)
+
+##mean squared prediction error
+pred.fs2<-predict.lm(step.f2, valid[,-1]) 
+mspe.fs2<-mean((pred.fs2-valid[,1])^2) 
+mspe.fs2 #600040753, smaller than mspe.fs1
+
+press.fs2/n #618694544
+mse.fs2 #597285255
+
+
+# Candidate Model 3
+fit.fs3.v<-lm(step.f3,data=valid) 
+summary(step.f3) 
+summary(fit.fs3.v) 
+
+##percent change in parameter estimation
+round(abs(coef(step.f3)-coef(fit.fs3.v))/abs(coef(step.f3))*100,3)
+
+##percent change in standard errors
+sd.fs3<- summary(step.f3)$coefficients[,"Std. Error"] 
+sd.fs3.v<- summary(fit.fs3.v)$coefficients[,"Std. Error"] 
+round(abs(sd.fs3-sd.fs3.v)/sd.fs3*100,3)
+
+##mean squared prediction error
+pred.fs3<-predict.lm(step.f3, valid[,-1]) 
+mspe.fs3<-mean((pred.fs3-valid[,1])^2) 
+mspe.fs3 #602561604 smaller than mspe.fs2
+
+press.fs3/n #628834176
+mse.fs3 #622488616
+
+# Candidate Model 2 is the final model
+
+```
+
+## Model Diagnostics
+
+```{r}
+
+# fit Candidate Model 2 on whole data 
+dt.split$log_gross_4 <- log(dt.split$gross)^4
+dt.split$log_budget <- log(dt.split$budget)
+dt.split$log_runtime <- log(dt.split$runtime)
+
+dt.split <- subset(dt.split,select=c(log_gross_4, log_budget, log_runtime, year, rating, genre, tier, season))
+
+fit.fs2.final<-lm(step.f2, data=dt.split)
+summary(fit.fs2.final)
+
+anova(fit.fs2.final)
+
+par(mfrow = c(2, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+plot(fit.fs2.final, sub.caption = "Figure 8: Diagnostic Plots for Final Model")
+
+
+# outlying and influential cases
+n.s <- nrow(dt.split)
+res <- residuals(fit.fs2.final)
+p <- length(fit.fs2.final$coefficients)
+h1 <- influence(fit.fs2.final)$hat 
+d.res.std <- studres(fit.fs2.final) #studentized deleted residuals 
+qt(1-0.05/(2*n.s),n.s-p) # bonferronis thresh hold
+
+idx.Y <- as.vector(which(abs(d.res.std)>=qt(1-0.1/(2*n.s),n.s-p))) 
+#idx.Y ## outliers in Y
+length(idx.Y)
+
+idx.X <- as.vector(which(h1>(2*p/n.s))) 
+#idx.X ## outliers in X
+length(idx.X)
+
+#plot(h1,res,xlab="leverage",ylab="residuals")
+par(mfrow=c(1,1))
+plot(fit.fs2.final, which=4, main = "Figure 9: Cook's Distance", caption = "" )
+
+##cooksd <- cooks.distance(fit.fs2.final)
+##n <- nrow(dt.split)
+##influential <- as.numeric(names(cooksd)[(cooksd > (4/n))])
+##df_screen <- dt.split[-influential, ]
+
+#Case 881, 1805, 4442 is an influential case according to Cook’s distance
+
+influential <- c(881, 1805, 4442)
+fit.fs2.final2<-lm(fit.fs2.final, data=dt.split[-influential,]) 
+par(mfrow = c(2, 2),oma=c(2,2,2,2),mar=c(4,3,3,3))
+plot(fit.fs2.final2, sub.caption = "Figure 9: Diagnostic Plots for Final Model without Influential Cases")
+
+f1<-fitted(fit.fs2.final)
+f2<-fitted(fit.fs2.final2)
+SUM<-sum(abs((f1[-influential]-f2)/f1[-influential])) 
+SUM<-SUM+abs((f1[influential]-predict(fit.fs2.final,newdata = dt.split[influential,]))/f1[influential]) 
+per.average<-SUM/n.s
+per.average
+
+# No case is removed
+
+```
+
+## Bootstrap
+
+```{r}
+
+library(boot)
+set.seed(2021)
+
+model_coef <- function(data, i){
+  d <- data[i,]
+  fit <- lm(step.f2, data=d)
+  return(coef(fit))
+}
+
+coeff <- boot(data=dt.split, statistic= model_coef, R=1000)
+
+coeff
+
+par(mfrow=c(1,2))
+hist(coeff$t[,2], xlab="bootstrap estimate beta* for log(gross)", main=NULL)
+hist(coeff$t[,17], xlab="bootstrap estimate beta* for year", main=NULL)
+mtext("Figure 10: Bootstrap Estimate Coefficients", side = 3, font=2, line=-1, outer=TRUE)
+
+```
+
+## Discussion
+
+```{r}
+
+library(carData)
+library(effects)
+#interaction
+
+budget.genre <- effect('log_budget*genre', fit.fs2.final,
+                                          se=TRUE, confidence.level=.95, typical=mean)
+
+budget.rating <- effect('log_budget*rating', fit.fs2.final,
+                                          se=TRUE, confidence.level=.95, typical=mean)
+
+inter.budget1 <- as.data.frame(budget.genre)
+inter.budget2 <- as.data.frame(budget.rating)
+
+summary(inter.budget1$fit)
+summary(inter.budget2$fit)
+
+library(ggplot2)
+plot.inter.budget1<-ggplot(data=inter.budget1, aes(x=log_budget, y=fit, group=genre))+
+      coord_cartesian()+  
+      geom_line(size=2, aes(color=genre))+
+      ylab(expression(paste(log(gross)^4)))+
+      xlab("log(budget)")+
+      ggtitle("Figure 12: Interaction between log(budget) and genre")+
+      theme_bw()+ 
+        theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank())+
+      scale_fill_grey()
+
+
+plot.inter.budget2<-ggplot(data=inter.budget2, aes(x=log_budget, y=fit, group=rating))+
+      coord_cartesian()+  
+      geom_line(size=2, aes(color=rating))+
+      ylab(expression(paste(log(gross)^4)))+
+      xlab("log(budget)")+
+      ggtitle("Figure 11: Interaction between log(budget) and rating")+
+      theme_bw()+ 
+        theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank())+
+      scale_fill_grey()
+
+plot.inter.budget2
+plot.inter.budget1
+
+
+####################
+
+year.genre <- effect('genre*year', fit.fs2.final,
+                                          xlevels=list(year = c(1980:2019)),
+                                          se=TRUE, confidence.level=.95, typical=mean)
+
+year.rating <- effect('rating*year', fit.fs2.final,
+                                          xlevels=list(year = c(1980:2019)),
+                                          se=TRUE, confidence.level=.95, typical=mean)
+
+inter.genre <- as.data.frame(year.genre)
+inter.rating <- as.data.frame(year.rating)
+
+summary(inter.genre$fit)
+summary(inter.rating$fit)
+
+library(ggplot2)
+plot.inter.genre<-ggplot(data=inter.genre, aes(x=year, y=fit, group=genre))+
+      coord_cartesian()+  
+      geom_line(size=2, aes(color=genre))+
+      ylab(expression(paste(log(gross)^4)))+
+      xlab("year")+
+      ggtitle("Figure 14: Interaction between year and genre")+
+      theme_bw()+ 
+        theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank())+
+      scale_fill_grey()
+
+
+plot.inter.rating<-ggplot(data=inter.rating, aes(x=year, y=fit, group=rating))+
+      coord_cartesian()+  
+      geom_line(size=2, aes(color=rating))+
+      ylab(expression(paste(log(gross)^4)))+
+      xlab("year")+
+      ggtitle("Figure 13: Interaction between year and rating")+
+      theme_bw()+ 
+        theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank())+
+      scale_fill_grey()
+
+plot.inter.rating
+plot.inter.genre
+
+```
