@@ -22,6 +22,6 @@
   - Bootstrap
 - Conclusion and Discussion
 
-#### PDF Preview
+#### Code Preview
 
-https://github.com/mingzhao1103/R_Bikes/blob/main/report.pdf
+https://htmlpreview.github.io/?https://github.com/mingzhao1103/R_Movies/blob/main/Movie.html
