@@ -2,7 +2,7 @@
 
 #### Project Goal 
 
-- To explore what affects movie revenue and how the effects change over time.
+- To explore which movie features affect movie revenue and how the effects change over time.
 
 #### Outline
 
